@@ -43,6 +43,9 @@ parser.add_argument("--beta1", type=float, default=0.5, help="momentum term of a
 parser.add_argument("--l1_weight", type=float, default=100.0, help="weight on L1 term for generator gradient")
 parser.add_argument("--gan_weight", type=float, default=1.0, help="weight on GAN term for generator gradient")
 
+parser.add_argument("--img_width", type=int, default=100, help="width of the input image")
+parser.add_argument("--img_height", type=int, default=1024, help="height of the input image")
+
 # export options
 parser.add_argument("--output_filetype", default="png", choices=["png", "jpeg"])
 a = parser.parse_args()
@@ -281,6 +284,9 @@ def load_examples():
         else:
             # break apart image pair and move to range [-1, 1]
             width = tf.shape(raw_input)[1] # [height, width, channels]
+            height = tf.shape(raw_input)[0]
+            assertion = tf.assert_equal(width, img_width, message="image's width is not right")
+            assertion = tf.assert_equal(height, img_height, message="image's height is not right")
             a_images = preprocess(raw_input[:,:width//2,:])
             b_images = preprocess(raw_input[:,width//2:,:])
 
@@ -311,10 +317,12 @@ def load_examples():
         return r
 
     with tf.name_scope("input_images"):
-        input_images = transform(inputs)
+    	input_images = inputs
+        #input_images = transform(inputs)
 
     with tf.name_scope("target_images"):
-        target_images = transform(targets)
+    	target_images = targets
+        #target_images = transform(targets)
 
     paths_batch, inputs_batch, targets_batch = tf.train.batch([paths, input_images, target_images], batch_size=a.batch_size)
     steps_per_epoch = int(math.ceil(len(input_paths) / a.batch_size))
