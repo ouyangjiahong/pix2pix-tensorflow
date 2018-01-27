@@ -46,6 +46,7 @@ parser.add_argument("--gan_weight", type=float, default=1.0, help="weight on GAN
 
 parser.add_argument("--img_width", type=int, default=256, help="width of the input image")
 parser.add_argument("--img_height", type=int, default=1024, help="height of the input image")
+parser.add_argument("--img_channel", type=int, default=1, help="channel of the input image")
 
 # export options
 parser.add_argument("--output_filetype", default="png", choices=["png", "jpeg"])
@@ -270,11 +271,16 @@ def load_examples():
         raw_input = decode(contents)
         raw_input = tf.image.convert_image_dtype(raw_input, dtype=tf.float32)
 
-        assertion = tf.assert_equal(tf.shape(raw_input)[2], 3, message="image does not have 3 channels")
-        with tf.control_dependencies([assertion]):
-            raw_input = tf.identity(raw_input)
-
-        raw_input.set_shape([None, None, 3])
+        if a.img_channel == 3:
+        	assertion = tf.assert_equal(tf.shape(raw_input)[2], 3, message="image does not have 3 channels")
+        	with tf.control_dependencies([assertion]):
+        		raw_input = tf.identity(raw_input)
+        		raw_input.set_shape([None, None, 3])
+        else:
+        	assertion = tf.assert_equal(tf.shape(raw_input)[2], 1, message="image does not have 1 channel")
+        	with tf.control_dependencies([assertion]):
+        		raw_input = tf.identity(raw_input)
+        		raw_input.set_shape([None, None, 1])
 
         if a.lab_colorization:
             # load color and brightness from image, no B image exists here
@@ -288,8 +294,12 @@ def load_examples():
             height = tf.shape(raw_input)[0]
             assertion = tf.assert_equal(width, a.img_width, message="image's width is not right")
             assertion = tf.assert_equal(height, a.img_height, message="image's height is not right")
-            a_images = preprocess(raw_input[:,:width//2,:])
-            b_images = preprocess(raw_input[:,width//2:,:])
+            if a.img_channel == 3:
+            	a_images = preprocess(raw_input[:,:width//2,:])
+            	b_images = preprocess(raw_input[:,width//2:,:])
+            else:
+            	a_images = preprocess(raw_input[:,:width//2])
+            	b_images = preprocess(raw_input[:,width//2:])
 
     if a.which_direction == "AtoB":
         inputs, targets = [a_images, b_images]
@@ -325,6 +335,7 @@ def load_examples():
     	target_images =  tf.image.resize_images(targets, [a.img_height, a.img_width], method=tf.image.ResizeMethod.AREA)
         #target_images = transform(targets)
 
+    print(input_images.shape)
     paths_batch, inputs_batch, targets_batch = tf.train.batch([paths, input_images, target_images], batch_size=a.batch_size)
     steps_per_epoch = int(math.ceil(len(input_paths) / a.batch_size))
 
