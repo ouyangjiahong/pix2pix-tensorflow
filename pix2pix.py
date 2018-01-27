@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import tensorflow as tf
 import numpy as np
+import cv2
 import argparse
 import os
 import json
@@ -26,7 +27,7 @@ parser.add_argument("--summary_freq", type=int, default=100, help="update summar
 parser.add_argument("--progress_freq", type=int, default=50, help="display progress every progress_freq steps")
 parser.add_argument("--trace_freq", type=int, default=0, help="trace execution every trace_freq steps")
 parser.add_argument("--display_freq", type=int, default=0, help="write current training images every display_freq steps")
-parser.add_argument("--save_freq", type=int, default=5000, help="save model every save_freq steps, 0 to disable")
+parser.add_argument("--save_freq", type=int, default=1000, help="save model every save_freq steps, 0 to disable")
 
 parser.add_argument("--aspect_ratio", type=float, default=1.0, help="aspect ratio of output images (width/height)")
 parser.add_argument("--lab_colorization", action="store_true", help="split input image into brightness (A) and color (B)")
@@ -326,6 +327,7 @@ def load_examples():
 
     paths_batch, inputs_batch, targets_batch = tf.train.batch([paths, input_images, target_images], batch_size=a.batch_size)
     steps_per_epoch = int(math.ceil(len(input_paths) / a.batch_size))
+
 
     return Examples(
         paths=paths_batch,
@@ -640,6 +642,7 @@ def main():
 
     examples = load_examples()
     print("examples count = %d" % examples.count)
+    #print(examples.inputs.shape)
 
     # inputs and targets are [batch_size, height, width, channels]
     model = create_model(examples.inputs, examples.targets)
@@ -815,4 +818,127 @@ def main():
                     break
 
 
+def preprocess_image():
+    if a.input_dir is None or not os.path.exists(a.input_dir):
+        raise Exception("input_dir does not exist")
+
+    input_paths = glob.glob(os.path.join(a.input_dir, "*.jpg"))
+    if len(input_paths) == 0:
+        input_paths = glob.glob(os.path.join(a.input_dir, "*.png"))
+    if len(input_paths) == 0:
+        raise Exception("input_dir contains no image files")
+
+    for path in input_paths:
+    	image = cv2.imread(path)
+    	if image.shape[1] != a.img_width:
+    		for i in xrange(image.shape[1] // a.img_width):
+    			image_tmp = image[:, i*a.img_width:(i+1)*a.img_width, :]
+    			path_tmp = path.split('.')
+    			path_tmp = path_tmp[0].split('_')
+    			path_tmp = path_tmp[2].split('/')
+    			path_tmp2 = path.split('/')
+    			path_tmp = path_tmp2[0] + '/' + path_tmp2[1] + '/crop/' + path_tmp[1] + '_' + str(i+1) + '.png'
+    			cv2.imwrite(path_tmp, image_tmp)
+    		if (i+1)*a.img_width != image.shape[1]:
+    			image_tmp = image[:, image.shape[1]-256:image.shape[1], :]
+    			path_tmp = path.split('.')
+    			path_tmp = path_tmp[0].split('_')
+    			path_tmp = path_tmp[2].split('/')
+    			path_tmp2 = path.split('/')
+    			path_tmp = path_tmp2[0] + '/' + path_tmp2[1] + '/crop/' + path_tmp[1] + '_' + str(i+2) + '.png'
+    			cv2.imwrite(path_tmp, image_tmp)
+    a.input_dir += '/crop'
+    a.output_dir += '/crop'
+    print("Preprocess images finished!")
+
+
+def postprocess_image():
+	if a.output_dir is None or not os.path.exists(a.output_dir):
+		raise Exception("output_dir does not exist")
+	
+	output_dir = a.output_dir[:-5]	#save in original dir not the crop
+	a.output_dir += '/images'
+	output_paths = glob.glob(os.path.join(a.output_dir, "*.jpg"))
+	if len(output_paths) == 0:
+		output_paths = glob.glob(os.path.join(a.output_dir, "*.png"))
+	
+	if len(output_paths) == 0:
+		raise Exception("output_dir contains no image files")
+
+	def get_name(path):
+		name, _ = os.path.splitext(os.path.basename(path))
+		return name
+
+    # if the image names are numbers, sort by the value rather than asciibetically
+    # having sorted inputs means that the outputs are sorted in test mode
+	if all(get_name(path).isdigit() for path in output_paths):
+		output_paths = sorted(output_paths, key=lambda path: int(get_name(path)))
+	else:
+		output_paths = sorted(output_paths)
+
+	input_dir = a.input_dir[:-5]	#find original images not the cropped one
+	input_paths = glob.glob(os.path.join(input_dir, "*.jpg"))
+	if len(input_paths) == 0:
+		input_paths = glob.glob(os.path.join(input_dir, "*.png"))
+	if len(input_paths) == 0:
+		raise Exception("input_dir contains no image files")
+	if all(get_name(path).isdigit() for path in input_paths):
+		input_paths = sorted(input_paths, key=lambda path: int(get_name(path)))
+	else:
+		input_paths = sorted(input_paths)
+
+	input_path = []		# be careful about the difference between path and paths
+	output_path = []
+	target_path = []
+	for i in xrange(len(output_paths) // 3):
+		input_path.append(output_paths[3*i])
+		output_path.append(output_paths[3*i+1])
+		target_path.append(output_paths[3*i+2])
+
+	print(input_path)
+	count = 0	# index of image in paths
+	for i in xrange(len(input_paths)):
+		img = cv2.imread(input_paths[i])
+		num = img.shape[1] // a.img_width	# number of pieces per image
+		image_input = cv2.imread(input_path[count])
+		image_output = cv2.imread(output_path[count])
+		image_target = cv2.imread(target_path[count])
+		count += 1
+		print(input_path[count-1])
+		for j in xrange(1, num):
+			img_tmp = cv2.imread(input_path[count])
+			image_input = np.concatenate((image_input, img_tmp), axis=1)
+			img_tmp = cv2.imread(output_path[count])
+			image_output = np.concatenate((image_output, img_tmp), axis=1)
+			img_tmp = cv2.imread(target_path[count])
+			image_target = np.concatenate((image_target, img_tmp), axis=1)
+			count += 1
+			print(input_path[count-1])
+		if num*a.img_width != img.shape[1]:
+			col = img.shape[1]
+			diff_col = col - num*a.img_width
+			img_tmp = cv2.imread(input_path[count])
+			image_input = np.concatenate((image_input, img_tmp[:,-diff_col-1:-1,:]), axis=1)
+			img_tmp = cv2.imread(output_path[count])
+			image_output = np.concatenate((image_output, img_tmp[:,-diff_col-1:-1,:]), axis=1)
+			img_tmp = cv2.imread(target_path[count])
+			image_target = np.concatenate((image_target, img_tmp[:,-diff_col-1:-1,:]), axis=1)
+			num += 1
+			count += 1
+			print(input_path[count-1])
+
+		tmp_path = output_dir + '/' + input_paths[i].split('/')[-1]
+		tmp_path = tmp_path.split('.')[0]
+		in_path = tmp_path + '-input.png'
+		out_path = tmp_path + '-output.png'
+		tar_path = tmp_path + '-target.png'
+		cv2.imwrite(in_path, image_input)
+		cv2.imwrite(out_path, image_output)
+		cv2.imwrite(tar_path, image_target)
+
+
+
+
+# preprocess_image()
 main()
+# postprocess_image()
