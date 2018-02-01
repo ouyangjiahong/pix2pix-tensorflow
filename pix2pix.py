@@ -57,6 +57,9 @@ CROP_SIZE = 256
 
 Examples = collections.namedtuple("Examples", "paths, inputs, targets, count, steps_per_epoch")
 Model = collections.namedtuple("Model", "outputs, predict_real, predict_fake, discrim_loss, discrim_grads_and_vars, gen_loss_GAN, gen_loss_L1, gen_grads_and_vars, train")
+lr_holder = tf.placeholder(tf.float32, None, name='learning_rate')
+lr_min = 1e-5
+
 
 
 def preprocess(image):
@@ -482,14 +485,14 @@ def create_model(inputs, targets):
 
     with tf.name_scope("discriminator_train"):
         discrim_tvars = [var for var in tf.trainable_variables() if var.name.startswith("discriminator")]
-        discrim_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+        discrim_optim = tf.train.AdamOptimizer(lr_holder, a.beta1)
         discrim_grads_and_vars = discrim_optim.compute_gradients(discrim_loss, var_list=discrim_tvars)
         discrim_train = discrim_optim.apply_gradients(discrim_grads_and_vars)
 
     with tf.name_scope("generator_train"):
         with tf.control_dependencies([discrim_train]):
             gen_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
-            gen_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+            gen_optim = tf.train.AdamOptimizer(lr_holder, a.beta1)
             gen_grads_and_vars = gen_optim.compute_gradients(gen_loss, var_list=gen_tvars)
             gen_train = gen_optim.apply_gradients(gen_grads_and_vars)
 
@@ -735,7 +738,7 @@ def main():
     with tf.name_scope("parameter_count"):
         parameter_count = tf.reduce_sum([tf.reduce_prod(tf.shape(v)) for v in tf.trainable_variables()])
 
-    saver = tf.train.Saver(max_to_keep=1)
+    saver = tf.train.Saver(max_to_keep=5)
 
     logdir = a.output_dir if (a.trace_freq > 0 or a.summary_freq > 0) else None
     sv = tf.train.Supervisor(logdir=logdir, save_summaries_secs=0, saver=None)
@@ -768,6 +771,13 @@ def main():
         else:
             # training
             start = time.time()
+            f_name = a.output_dir + '/loss.txt'
+            f = open(f_name, 'w')
+
+            gen_loss_list = []		#save the gen and l1 loss for each epoch
+            gen_loss_count = 0		#counter for gen and l1 loss during one epoch
+            gen_loss_min = 100
+            lr_cur = a.lr 			#begining value of lr
 
             for step in range(max_steps):
                 def should(freq):
@@ -784,10 +794,14 @@ def main():
                     "global_step": sv.global_step,
                 }
 
-                if should(a.progress_freq):
-                    fetches["discrim_loss"] = model.discrim_loss
-                    fetches["gen_loss_GAN"] = model.gen_loss_GAN
-                    fetches["gen_loss_L1"] = model.gen_loss_L1
+                fetches["discrim_loss"] = model.discrim_loss
+                fetches["gen_loss_GAN"] = model.gen_loss_GAN
+                fetches["gen_loss_L1"] = model.gen_loss_L1
+
+                # if should(a.progress_freq):
+                #     fetches["discrim_loss"] = model.discrim_loss
+                #     fetches["gen_loss_GAN"] = model.gen_loss_GAN
+                #     fetches["gen_loss_L1"] = model.gen_loss_L1
 
                 if should(a.summary_freq):
                     fetches["summary"] = sv.summary_op
@@ -795,7 +809,38 @@ def main():
                 if should(a.display_freq):
                     fetches["display"] = display_fetches
 
-                results = sess.run(fetches, options=options, run_metadata=run_metadata)
+                # results = sess.run(fetches, options=options, run_metadata=run_metadata)
+                results = sess.run(fetches, options=options, feed_dict={lr_holder:lr_cur}, run_metadata=run_metadata)
+
+                def is_change_lr(loss_list, loss):	# return true if need to update lr
+                	if len(loss_list) < 5:
+                		return False
+                	for i in xrange(5):
+                		if loss < loss_list[-1-i]:	# has at least smaller loss than one for the last 5 epoch
+                			return False
+                	return True
+
+                #change lr and save model decided by gen_loss
+                gen_loss_count += results["gen_loss_GAN"] * a.gan_weight + results["gen_loss_L1"] * a.l1_weight
+
+                if step % examples.steps_per_epoch == examples.steps_per_epoch - 1: #end of the epoch
+                	gen_loss_mean = gen_loss_count / examples.steps_per_epoch
+                	gen_loss_list.append(gen_loss_mean)
+                	gen_loss_count = 0
+                	epoch_cur = math.ceil(results["global_step"] / examples.steps_per_epoch)
+                	f.write("epoch "+str(epoch_cur)+"    "+str(gen_loss_mean)+"\n")
+
+                	if gen_loss_mean < gen_loss_min:	#get better model
+                		gen_loss_min = gen_loss_mean
+                		print("saving model")
+                		f.write("save model"+"\n")
+                    	saver.save(sess, os.path.join(a.output_dir, "model"), global_step=sv.global_step)
+
+                	if is_change_lr(gen_loss_list, gen_loss_mean):	#update lr to half
+                		lr_cur = max(lr_cur/2, lr_min)
+                		print("update learning rate")
+                		f.write("update learning rate to "+str(lr_cur)+"\n")
+
 
                 if should(a.summary_freq):
                     print("recording summary")
@@ -821,12 +866,14 @@ def main():
                     print("gen_loss_GAN", results["gen_loss_GAN"])
                     print("gen_loss_L1", results["gen_loss_L1"])
 
-                if should(a.save_freq):
-                    print("saving model")
-                    saver.save(sess, os.path.join(a.output_dir, "model"), global_step=sv.global_step)
+                # if should(a.save_freq):
+                #     print("saving model")
+                #     saver.save(sess, os.path.join(a.output_dir, "model"), global_step=sv.global_step)
 
                 if sv.should_stop():
                     break
+                    
+            saver.save(sess, os.path.join(a.output_dir, "model"), global_step=sv.global_step)
 
 
 def preprocess_image():
