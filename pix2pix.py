@@ -27,7 +27,7 @@ parser.add_argument("--summary_freq", type=int, default=100, help="update summar
 parser.add_argument("--progress_freq", type=int, default=50, help="display progress every progress_freq steps")
 parser.add_argument("--trace_freq", type=int, default=0, help="trace execution every trace_freq steps")
 parser.add_argument("--display_freq", type=int, default=0, help="write current training images every display_freq steps")
-parser.add_argument("--save_freq", type=int, default=1000, help="save model every save_freq steps, 0 to disable")
+parser.add_argument("--save_freq", type=int, default=200000, help="save model every save_freq steps, 0 to disable")
 
 parser.add_argument("--aspect_ratio", type=float, default=1.0, help="aspect ratio of output images (width/height)")
 parser.add_argument("--lab_colorization", action="store_true", help="split input image into brightness (A) and color (B)")
@@ -811,11 +811,11 @@ def main():
                 # results = sess.run(fetches, options=options, run_metadata=run_metadata)
                 results = sess.run(fetches, options=options, feed_dict={lr_holder:lr_cur}, run_metadata=run_metadata)
 
-                def is_change_lr(loss_list, loss):	# return true if need to update lr
-                	if len(loss_list) < 5:
+                def is_change_lr(loss_list):	# return true if need to update lr
+                	if len(loss_list) < 6:
                 		return False
                 	for i in xrange(5):
-                		if loss < loss_list[-1-i]:	# has at least smaller loss than one for the last 5 epoch
+                		if loss_list[-2-i] > loss_list[-1-i]:	# loss decrease
                 			return False
                 	return True
 
@@ -836,7 +836,7 @@ def main():
                 		f.write("save model"+"\n")
                     	saver.save(sess, os.path.join(a.output_dir, "model"), global_step=sv.global_step)
 
-                	if is_change_lr(gen_loss_list, gen_loss_mean):	#update lr to half
+                	if is_change_lr(gen_loss_list):	#update lr to half
                 		lr_cur = max(lr_cur/2, lr_min)
                 		print("update learning rate")
                 		f.write("update learning rate to "+str(lr_cur)+"\n")
@@ -867,9 +867,9 @@ def main():
                     print("gen_loss_GAN", results["gen_loss_GAN"])
                     print("gen_loss_L1", results["gen_loss_L1"])
 
-                # if should(a.save_freq):
-                #     print("saving model")
-                #     saver.save(sess, os.path.join(a.output_dir, "model"), global_step=sv.global_step)
+                if should(a.save_freq):
+                    print("saving model")
+                    saver.save(sess, os.path.join(a.output_dir, "model"), global_step=sv.global_step)
 
                 if sv.should_stop():
                     break
