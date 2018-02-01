@@ -772,7 +772,6 @@ def main():
             # training
             start = time.time()
             f_name = a.output_dir + '/loss.txt'
-            f = open(f_name, 'w')
 
             gen_loss_list = []		#save the gen and l1 loss for each epoch
             gen_loss_count = 0		#counter for gen and l1 loss during one epoch
@@ -824,6 +823,7 @@ def main():
                 gen_loss_count += results["gen_loss_GAN"] * a.gan_weight + results["gen_loss_L1"] * a.l1_weight
 
                 if step % examples.steps_per_epoch == examples.steps_per_epoch - 1: #end of the epoch
+                	f = open(f_name, 'a')
                 	gen_loss_mean = gen_loss_count / examples.steps_per_epoch
                 	gen_loss_list.append(gen_loss_mean)
                 	gen_loss_count = 0
@@ -840,6 +840,7 @@ def main():
                 		lr_cur = max(lr_cur/2, lr_min)
                 		print("update learning rate")
                 		f.write("update learning rate to "+str(lr_cur)+"\n")
+                	f.close()
 
 
                 if should(a.summary_freq):
@@ -872,7 +873,7 @@ def main():
 
                 if sv.should_stop():
                     break
-                    
+
             saver.save(sess, os.path.join(a.output_dir, "model"), global_step=sv.global_step)
 
 
