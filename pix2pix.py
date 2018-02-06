@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import tensorflow as tf
 import numpy as np
+import matplotlib.pyplot as plt
 import cv2
 import argparse
 import os
@@ -27,7 +28,7 @@ parser.add_argument("--summary_freq", type=int, default=100, help="update summar
 parser.add_argument("--progress_freq", type=int, default=50, help="display progress every progress_freq steps")
 parser.add_argument("--trace_freq", type=int, default=0, help="trace execution every trace_freq steps")
 parser.add_argument("--display_freq", type=int, default=0, help="write current training images every display_freq steps")
-parser.add_argument("--save_freq", type=int, default=200000, help="save model every save_freq steps, 0 to disable")
+parser.add_argument("--save_freq", type=int, default=5000, help="save model every save_freq steps, 0 to disable")
 
 parser.add_argument("--aspect_ratio", type=float, default=1.0, help="aspect ratio of output images (width/height)")
 parser.add_argument("--lab_colorization", action="store_true", help="split input image into brightness (A) and color (B)")
@@ -56,7 +57,7 @@ EPS = 1e-12
 CROP_SIZE = 256
 
 Examples = collections.namedtuple("Examples", "paths, inputs, targets, count, steps_per_epoch")
-Model = collections.namedtuple("Model", "outputs, predict_real, predict_fake, discrim_loss, discrim_grads_and_vars, gen_loss_GAN, gen_loss_L1, gen_grads_and_vars, train")
+Model = collections.namedtuple("Model", "outputs, predict_real, predict_fake, discrim_loss, discrim_grads_and_vars, gen_loss_GAN, gen_loss_L1, gen_loss, gen_grads_and_vars, train")
 lr_holder = tf.placeholder(tf.float32, None, name='learning_rate')
 lr_min = 1e-5
 
@@ -243,6 +244,18 @@ def lab_to_rgb(lab):
         return tf.reshape(srgb_pixels, tf.shape(lab))
 
 
+def generate_mask(raw_input):
+	print(raw_input.shape)
+	init = tf.initialize_all_variables()
+	sess_tmp = tf.Session()
+	sess_tmp.run(init)
+	raw_img = sess_tmp.run(raw_input)
+	fig = plt.figure()
+	plt.imshow(raw_img)
+	plt.show()
+	print("show~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+
+
 def load_examples():
     if a.input_dir is None or not os.path.exists(a.input_dir):
         raise Exception("input_dir does not exist")
@@ -274,6 +287,9 @@ def load_examples():
         raw_input = decode(contents)
         raw_input = tf.image.convert_image_dtype(raw_input, dtype=tf.float32)
 
+
+        # mask = generate_mask(raw_input)
+
         if a.img_channel == 3:
         	assertion = tf.assert_equal(tf.shape(raw_input)[2], 3, message="image does not have 3 channels")
         	with tf.control_dependencies([assertion]):
@@ -295,6 +311,7 @@ def load_examples():
             # break apart image pair and move to range [-1, 1]
             width = tf.shape(raw_input)[1] # [height, width, channels]
             height = tf.shape(raw_input)[0]
+            print(width)
             assertion = tf.assert_equal(width, a.img_width, message="image's width is not right")
             assertion = tf.assert_equal(height, a.img_height, message="image's height is not right")
             if a.img_channel == 3:
@@ -497,7 +514,7 @@ def create_model(inputs, targets):
             gen_train = gen_optim.apply_gradients(gen_grads_and_vars)
 
     ema = tf.train.ExponentialMovingAverage(decay=0.99)
-    update_losses = ema.apply([discrim_loss, gen_loss_GAN, gen_loss_L1])
+    update_losses = ema.apply([discrim_loss, gen_loss_GAN, gen_loss_L1, gen_loss])
 
     global_step = tf.contrib.framework.get_or_create_global_step()
     incr_global_step = tf.assign(global_step, global_step+1)
@@ -509,6 +526,7 @@ def create_model(inputs, targets):
         discrim_grads_and_vars=discrim_grads_and_vars,
         gen_loss_GAN=ema.average(gen_loss_GAN),
         gen_loss_L1=ema.average(gen_loss_L1),
+        gen_loss=ema.average(gen_loss),
         gen_grads_and_vars=gen_grads_and_vars,
         outputs=outputs,
         train=tf.group(update_losses, incr_global_step, gen_train),
@@ -728,6 +746,7 @@ def main():
     tf.summary.scalar("discriminator_loss", model.discrim_loss)
     tf.summary.scalar("generator_loss_GAN", model.gen_loss_GAN)
     tf.summary.scalar("generator_loss_L1", model.gen_loss_L1)
+    tf.summary.scalar("generator_loss", model.gen_loss)
 
     for var in tf.trainable_variables():
         tf.summary.histogram(var.op.name + "/values", var)
@@ -796,6 +815,7 @@ def main():
                 fetches["discrim_loss"] = model.discrim_loss
                 fetches["gen_loss_GAN"] = model.gen_loss_GAN
                 fetches["gen_loss_L1"] = model.gen_loss_L1
+                fetches["gen_loss"] = model.gen_loss
 
                 # if should(a.progress_freq):
                 #     fetches["discrim_loss"] = model.discrim_loss
