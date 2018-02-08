@@ -24,8 +24,8 @@ parser.add_argument("--checkpoint", default=None, help="directory with checkpoin
 
 parser.add_argument("--max_steps", type=int, help="number of training steps (0 to disable)")
 parser.add_argument("--max_epochs", type=int, help="number of training epochs")
-parser.add_argument("--summary_freq", type=int, default=100, help="update summaries every summary_freq steps")
-parser.add_argument("--progress_freq", type=int, default=50, help="display progress every progress_freq steps")
+parser.add_argument("--summary_freq", type=int, default=20, help="update summaries every summary_freq steps")
+parser.add_argument("--progress_freq", type=int, default=20, help="display progress every progress_freq steps")
 parser.add_argument("--trace_freq", type=int, default=0, help="trace execution every trace_freq steps")
 parser.add_argument("--display_freq", type=int, default=0, help="write current training images every display_freq steps")
 parser.add_argument("--save_freq", type=int, default=5000, help="save model every save_freq steps, 0 to disable")
@@ -820,7 +820,8 @@ def main():
         else:
             # training
             start = time.time()
-            f_name = a.output_dir + '/loss.txt'
+            f_name = a.output_dir + '/loss_epoch.txt'
+            f_name2 = a.output_dir + '/loss.txt'
 
             gen_loss_list = []		#save the gen and l1 loss for each epoch
             gen_loss_count = 0		#counter for gen and l1 loss during one epoch
@@ -870,7 +871,7 @@ def main():
                 	return True
 
                 #change lr and save model decided by gen_loss
-                gen_loss_count += results["gen_loss_GAN"] * a.gan_weight + results["gen_loss_L1"] * a.l1_weight
+                gen_loss_count += results["gen_loss"]
 
                 if step % examples.steps_per_epoch == examples.steps_per_epoch - 1: #end of the epoch
                 	f = open(f_name, 'a')
@@ -916,6 +917,11 @@ def main():
                     print("discrim_loss", results["discrim_loss"])
                     print("gen_loss_GAN", results["gen_loss_GAN"])
                     print("gen_loss_L1", results["gen_loss_L1"])
+                    f2 = open(f_name2, 'a')
+                    f2.write("epoch "+str(train_epoch)+"step "+str(train_step)+"    "+str(results["discrim_loss"])+"    "+ \
+                        str(results["gen_loss"])+"    "+str(results["gen_loss_GAN"])+"    "+str(results["gen_loss_L1"])+"\n")
+                    f2.close()
+
 
                 if should(a.save_freq):
                     print("saving model")
