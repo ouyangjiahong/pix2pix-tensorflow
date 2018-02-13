@@ -4,7 +4,6 @@ from __future__ import print_function
 
 import tensorflow as tf
 import numpy as np
-import matplotlib.pyplot as plt
 import cv2
 import argparse
 import os
@@ -28,10 +27,9 @@ parser.add_argument("--summary_freq", type=int, default=20, help="update summari
 parser.add_argument("--progress_freq", type=int, default=20, help="display progress every progress_freq steps")
 parser.add_argument("--trace_freq", type=int, default=0, help="trace execution every trace_freq steps")
 parser.add_argument("--display_freq", type=int, default=0, help="write current training images every display_freq steps")
-parser.add_argument("--save_freq", type=int, default=5000, help="save model every save_freq steps, 0 to disable")
+parser.add_argument("--save_freq", type=int, default=100000, help="save model every save_freq steps, 0 to disable")
 
 parser.add_argument("--aspect_ratio", type=float, default=1.0, help="aspect ratio of output images (width/height)")
-parser.add_argument("--lab_colorization", action="store_true", help="split input image into brightness (A) and color (B)")
 parser.add_argument("--batch_size", type=int, default=1, help="number of images in batch")
 parser.add_argument("--which_direction", type=str, default="AtoB", choices=["AtoB", "BtoA"])
 parser.add_argument("--ngf", type=int, default=64, help="number of generator filters in first conv layer")
@@ -48,7 +46,7 @@ parser.add_argument("--gan_weight", type=float, default=1.0, help="weight on GAN
 parser.add_argument("--img_width", type=int, default=768, help="width of the input image")  #3 times of 256
 parser.add_argument("--img_height", type=int, default=1024, help="height of the input image")
 parser.add_argument("--img_channel", type=int, default=1, help="channel of the input image")
-parser.add_argument("--front_weight", type=float, default=10.0, help="weight of frontground")
+parser.add_argument("--front_weight", type=float, default=100.0, help="weight of frontground")
 parser.add_argument("--back_weight", type=float, default=1000.0, help="weight of background")
 
 # export options
@@ -75,30 +73,6 @@ def deprocess(image):
     with tf.name_scope("deprocess"):
         # [-1, 1] => [0, 1]
         return (image + 1) / 2
-
-
-def preprocess_lab(lab):
-    with tf.name_scope("preprocess_lab"):
-        L_chan, a_chan, b_chan = tf.unstack(lab, axis=2)
-        # L_chan: black and white with input range [0, 100]
-        # a_chan/b_chan: color channels with input range ~[-110, 110], not exact
-        # [0, 100] => [-1, 1],  ~[-110, 110] => [-1, 1]
-        return [L_chan / 50 - 1, a_chan / 110, b_chan / 110]
-
-
-def deprocess_lab(L_chan, a_chan, b_chan):
-    with tf.name_scope("deprocess_lab"):
-        # this is axis=3 instead of axis=2 because we process individual images but deprocess batches
-        return tf.stack([(L_chan + 1) / 2 * 100, a_chan * 110, b_chan * 110], axis=3)
-
-
-def augment(image, brightness):
-    # (a, b) color channels, combine with L channel and convert to rgb
-    a_chan, b_chan = tf.unstack(image, axis=3)
-    L_chan = tf.squeeze(brightness, axis=3)
-    lab = deprocess_lab(L_chan, a_chan, b_chan)
-    rgb = lab_to_rgb(lab)
-    return rgb
 
 
 def conv(batch_input, out_channels, stride):
@@ -162,100 +136,6 @@ def check_image(image):
     image.set_shape(shape)
     return image
 
-# based on https://github.com/torch/image/blob/9f65c30167b2048ecbe8b7befdc6b2d6d12baee9/generic/image.c
-def rgb_to_lab(srgb):
-    with tf.name_scope("rgb_to_lab"):
-        srgb = check_image(srgb)
-        srgb_pixels = tf.reshape(srgb, [-1, 3])
-
-        with tf.name_scope("srgb_to_xyz"):
-            linear_mask = tf.cast(srgb_pixels <= 0.04045, dtype=tf.float32)
-            exponential_mask = tf.cast(srgb_pixels > 0.04045, dtype=tf.float32)
-            rgb_pixels = (srgb_pixels / 12.92 * linear_mask) + (((srgb_pixels + 0.055) / 1.055) ** 2.4) * exponential_mask
-            rgb_to_xyz = tf.constant([
-                #    X        Y          Z
-                [0.412453, 0.212671, 0.019334], # R
-                [0.357580, 0.715160, 0.119193], # G
-                [0.180423, 0.072169, 0.950227], # B
-            ])
-            xyz_pixels = tf.matmul(rgb_pixels, rgb_to_xyz)
-
-        # https://en.wikipedia.org/wiki/Lab_color_space#CIELAB-CIEXYZ_conversions
-        with tf.name_scope("xyz_to_cielab"):
-            # convert to fx = f(X/Xn), fy = f(Y/Yn), fz = f(Z/Zn)
-
-            # normalize for D65 white point
-            xyz_normalized_pixels = tf.multiply(xyz_pixels, [1/0.950456, 1.0, 1/1.088754])
-
-            epsilon = 6/29
-            linear_mask = tf.cast(xyz_normalized_pixels <= (epsilon**3), dtype=tf.float32)
-            exponential_mask = tf.cast(xyz_normalized_pixels > (epsilon**3), dtype=tf.float32)
-            fxfyfz_pixels = (xyz_normalized_pixels / (3 * epsilon**2) + 4/29) * linear_mask + (xyz_normalized_pixels ** (1/3)) * exponential_mask
-
-            # convert to lab
-            fxfyfz_to_lab = tf.constant([
-                #  l       a       b
-                [  0.0,  500.0,    0.0], # fx
-                [116.0, -500.0,  200.0], # fy
-                [  0.0,    0.0, -200.0], # fz
-            ])
-            lab_pixels = tf.matmul(fxfyfz_pixels, fxfyfz_to_lab) + tf.constant([-16.0, 0.0, 0.0])
-
-        return tf.reshape(lab_pixels, tf.shape(srgb))
-
-
-def lab_to_rgb(lab):
-    with tf.name_scope("lab_to_rgb"):
-        lab = check_image(lab)
-        lab_pixels = tf.reshape(lab, [-1, 3])
-
-        # https://en.wikipedia.org/wiki/Lab_color_space#CIELAB-CIEXYZ_conversions
-        with tf.name_scope("cielab_to_xyz"):
-            # convert to fxfyfz
-            lab_to_fxfyfz = tf.constant([
-                #   fx      fy        fz
-                [1/116.0, 1/116.0,  1/116.0], # l
-                [1/500.0,     0.0,      0.0], # a
-                [    0.0,     0.0, -1/200.0], # b
-            ])
-            fxfyfz_pixels = tf.matmul(lab_pixels + tf.constant([16.0, 0.0, 0.0]), lab_to_fxfyfz)
-
-            # convert to xyz
-            epsilon = 6/29
-            linear_mask = tf.cast(fxfyfz_pixels <= epsilon, dtype=tf.float32)
-            exponential_mask = tf.cast(fxfyfz_pixels > epsilon, dtype=tf.float32)
-            xyz_pixels = (3 * epsilon**2 * (fxfyfz_pixels - 4/29)) * linear_mask + (fxfyfz_pixels ** 3) * exponential_mask
-
-            # denormalize for D65 white point
-            xyz_pixels = tf.multiply(xyz_pixels, [0.950456, 1.0, 1.088754])
-
-        with tf.name_scope("xyz_to_srgb"):
-            xyz_to_rgb = tf.constant([
-                #     r           g          b
-                [ 3.2404542, -0.9692660,  0.0556434], # x
-                [-1.5371385,  1.8760108, -0.2040259], # y
-                [-0.4985314,  0.0415560,  1.0572252], # z
-            ])
-            rgb_pixels = tf.matmul(xyz_pixels, xyz_to_rgb)
-            # avoid a slightly negative number messing up the conversion
-            rgb_pixels = tf.clip_by_value(rgb_pixels, 0.0, 1.0)
-            linear_mask = tf.cast(rgb_pixels <= 0.0031308, dtype=tf.float32)
-            exponential_mask = tf.cast(rgb_pixels > 0.0031308, dtype=tf.float32)
-            srgb_pixels = (rgb_pixels * 12.92 * linear_mask) + ((rgb_pixels ** (1/2.4) * 1.055) - 0.055) * exponential_mask
-
-        return tf.reshape(srgb_pixels, tf.shape(lab))
-
-
-def generate_mask(raw_input):
-	print(raw_input.shape)
-	init = tf.initialize_all_variables()
-	sess_tmp = tf.Session()
-	sess_tmp.run(init)
-	raw_img = sess_tmp.run(raw_input)
-	fig = plt.figure()
-	plt.imshow(raw_img)
-	plt.show()
-	print("show~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
 
 def load_examples():
@@ -303,27 +183,19 @@ def load_examples():
         		raw_input = tf.identity(raw_input)
         		raw_input.set_shape([None, None, 1])
 
-        if a.lab_colorization:
-            # load color and brightness from image, no B image exists here
-            lab = rgb_to_lab(raw_input)
-            L_chan, a_chan, b_chan = preprocess_lab(lab)
-            a_images = tf.expand_dims(L_chan, axis=2)
-            b_images = tf.stack([a_chan, b_chan], axis=2)
+        # break apart image pair and move to range [-1, 1]
+        width = tf.shape(raw_input)[1] # [height, width, channels]
+        height = tf.shape(raw_input)[0]
+        assertion = tf.assert_equal(width, a.img_width, message="image's width is not right")
+        assertion = tf.assert_equal(height, a.img_height, message="image's height is not right")
+        if a.img_channel == 3:
+            a_images = preprocess(raw_input[:,:width//3,:])
+            b_images = preprocess(raw_input[:,width//3:2*width//3,:])
+            masks = raw_input[:,2*width//3:,:]
         else:
-            # break apart image pair and move to range [-1, 1]
-            width = tf.shape(raw_input)[1] # [height, width, channels]
-            height = tf.shape(raw_input)[0]
-            print(width)
-            assertion = tf.assert_equal(width, a.img_width, message="image's width is not right")
-            assertion = tf.assert_equal(height, a.img_height, message="image's height is not right")
-            if a.img_channel == 3:
-            	a_images = preprocess(raw_input[:,:width//3,:])
-            	b_images = preprocess(raw_input[:,width//3:2*width//3,:])
-                masks = raw_input[:,2*width//3:,:]
-            else:
-            	a_images = preprocess(raw_input[:,:width//3])
-                b_images = preprocess(raw_input[:,width//3:2*width//3])
-                masks = raw_input[:,2*width//3:]
+            a_images = preprocess(raw_input[:,:width//3])
+            b_images = preprocess(raw_input[:,width//3:2*width//3])
+            masks = raw_input[:,2*width//3:]
 
     if a.which_direction == "AtoB":
         inputs, targets = [a_images, b_images]
@@ -629,7 +501,7 @@ def main():
             raise Exception("checkpoint required for test mode")
 
         # load some options from the checkpoint
-        options = {"which_direction", "ngf", "ndf", "lab_colorization"}
+        options = {"which_direction", "ngf", "ndf"}
         with open(os.path.join(a.checkpoint, "options.json")) as f:
             for key, val in json.loads(f.read()).items():
                 if key in options:
@@ -645,62 +517,6 @@ def main():
     with open(os.path.join(a.output_dir, "options.json"), "w") as f:
         f.write(json.dumps(vars(a), sort_keys=True, indent=4))
 
-    if a.mode == "export":
-        # export the generator to a meta graph that can be imported later for standalone generation
-        if a.lab_colorization:
-            raise Exception("export not supported for lab_colorization")
-
-        input = tf.placeholder(tf.string, shape=[1])
-        input_data = tf.decode_base64(input[0])
-        input_image = tf.image.decode_png(input_data)
-
-        # remove alpha channel if present
-        input_image = tf.cond(tf.equal(tf.shape(input_image)[2], 4), lambda: input_image[:,:,:3], lambda: input_image)
-        # convert grayscale to RGB
-        input_image = tf.cond(tf.equal(tf.shape(input_image)[2], 1), lambda: tf.image.grayscale_to_rgb(input_image), lambda: input_image)
-
-        input_image = tf.image.convert_image_dtype(input_image, dtype=tf.float32)
-        input_image.set_shape([CROP_SIZE, CROP_SIZE, 3])
-        batch_input = tf.expand_dims(input_image, axis=0)
-
-        with tf.variable_scope("generator"):
-            batch_output = deprocess(create_generator(preprocess(batch_input), 3))
-
-        output_image = tf.image.convert_image_dtype(batch_output, dtype=tf.uint8)[0]
-        if a.output_filetype == "png":
-            output_data = tf.image.encode_png(output_image)
-        elif a.output_filetype == "jpeg":
-            output_data = tf.image.encode_jpeg(output_image, quality=80)
-        else:
-            raise Exception("invalid filetype")
-        output = tf.convert_to_tensor([tf.encode_base64(output_data)])
-
-        key = tf.placeholder(tf.string, shape=[1])
-        inputs = {
-            "key": key.name,
-            "input": input.name
-        }
-        tf.add_to_collection("inputs", json.dumps(inputs))
-        outputs = {
-            "key":  tf.identity(key).name,
-            "output": output.name,
-        }
-        tf.add_to_collection("outputs", json.dumps(outputs))
-
-        init_op = tf.global_variables_initializer()
-        restore_saver = tf.train.Saver()
-        export_saver = tf.train.Saver()
-
-        with tf.Session() as sess:
-            sess.run(init_op)
-            print("loading model from checkpoint")
-            checkpoint = tf.train.latest_checkpoint(a.checkpoint)
-            restore_saver.restore(sess, checkpoint)
-            print("exporting model")
-            export_saver.export_meta_graph(filename=os.path.join(a.output_dir, "export.meta"))
-            export_saver.save(sess, os.path.join(a.output_dir, "export"), write_meta_graph=False)
-
-        return
 
     examples = load_examples()
     print("examples count = %d" % examples.count)
@@ -709,27 +525,9 @@ def main():
     # inputs and targets are [batch_size, height, width, channels]
     model = create_model(examples.inputs, examples.targets, examples.masks)
 
-    # undo colorization splitting on images that we use for display/output
-    if a.lab_colorization:
-        if a.which_direction == "AtoB":
-            # inputs is brightness, this will be handled fine as a grayscale image
-            # need to augment targets and outputs with brightness
-            targets = augment(examples.targets, examples.inputs)
-            outputs = augment(model.outputs, examples.inputs)
-            # inputs can be deprocessed normally and handled as if they are single channel
-            # grayscale images
-            inputs = deprocess(examples.inputs)
-        elif a.which_direction == "BtoA":
-            # inputs will be color channels only, get brightness from targets
-            inputs = augment(examples.inputs, examples.targets)
-            targets = deprocess(examples.targets)
-            outputs = deprocess(model.outputs)
-        else:
-            raise Exception("invalid direction")
-    else:
-        inputs = deprocess(examples.inputs)
-        targets = deprocess(examples.targets)
-        outputs = deprocess(model.outputs)
+    inputs = deprocess(examples.inputs)
+    targets = deprocess(examples.targets)
+    outputs = deprocess(model.outputs)
 
     def convert(image):
         if a.aspect_ratio != 1.0:
@@ -823,9 +621,12 @@ def main():
             f_name = a.output_dir + '/loss_epoch.txt'
             f_name2 = a.output_dir + '/loss.txt'
 
-            gen_loss_list = []		#save the gen and l1 loss for each epoch
-            gen_loss_count = 0		#counter for gen and l1 loss during one epoch
-            gen_loss_min = 100
+            gen_loss_list = []		#save the l1 loss for each epoch
+            gen_loss_count = 0		#counter for l1 loss during one epoch
+            gen_loss_min = 200
+            gen_loss_l1_list = []      #save the l1 loss for each epoch
+            gen_loss_l1_count = 0      #counter for l1 loss during one epoch
+            gen_loss_l1_min = 200
             lr_cur = a.lr 			#begining value of lr
 
             for step in range(max_steps):
@@ -872,26 +673,30 @@ def main():
 
                 #change lr and save model decided by gen_loss
                 gen_loss_count += results["gen_loss"]
+                gen_loss_l1_count += results["gen_loss_L1"]
 
                 if step % examples.steps_per_epoch == examples.steps_per_epoch - 1: #end of the epoch
-                	f = open(f_name, 'a')
-                	gen_loss_mean = gen_loss_count / examples.steps_per_epoch
-                	gen_loss_list.append(gen_loss_mean)
-                	gen_loss_count = 0
-                	epoch_cur = math.ceil(results["global_step"] / examples.steps_per_epoch)
-                	f.write("epoch "+str(epoch_cur)+"    "+str(gen_loss_mean)+"\n")
+                    f = open(f_name, 'a')
+                    gen_loss_mean = gen_loss_count / examples.steps_per_epoch
+                    gen_loss_list.append(gen_loss_mean)
+                    gen_loss_count = 0
+                    gen_loss_l1_mean = gen_loss_l1_count / examples.steps_per_epoch
+                    gen_loss_l1_list.append(gen_loss_l1_mean)
+                    gen_loss_l1_count = 0
+                    epoch_cur = math.ceil(results["global_step"] / examples.steps_per_epoch)
+                    f.write("epoch "+str(epoch_cur)+"    "+str(gen_loss_mean)+ "    "+str(gen_loss_l1_mean)+"\n")
 
-                	if gen_loss_mean < gen_loss_min:	#get better model
-                		gen_loss_min = gen_loss_mean
-                		print("saving model")
-                		f.write("save model"+"\n")
-                    	saver.save(sess, os.path.join(a.output_dir, "model"), global_step=sv.global_step)
+                    if gen_loss_l1_mean < gen_loss_l1_min:	#get better model
+                        gen_loss_l1_min = gen_loss_l1_mean
+                        print("saving model")
+                        f.write("save model"+"\n")
+                        saver.save(sess, os.path.join(a.output_dir, "model"), global_step=sv.global_step)
 
-                	if is_change_lr(gen_loss_list):	#update lr to half
-                		lr_cur = max(lr_cur/2, lr_min)
-                		print("update learning rate")
-                		f.write("update learning rate to "+str(lr_cur)+"\n")
-                	f.close()
+                    if is_change_lr(gen_loss_l1_list):	#update lr to half
+                        lr_cur = max(lr_cur/2, lr_min)
+                        print("update learning rate")
+                        f.write("update learning rate to "+str(lr_cur)+"\n")
+                    f.close()
 
 
                 if should(a.summary_freq):
@@ -918,8 +723,8 @@ def main():
                     print("gen_loss_GAN", results["gen_loss_GAN"])
                     print("gen_loss_L1", results["gen_loss_L1"])
                     f2 = open(f_name2, 'a')
-                    f2.write("epoch "+str(train_epoch)+"step "+str(train_step)+"    "+str(results["discrim_loss"])+"    "+ \
-                        str(results["gen_loss"])+"    "+str(results["gen_loss_GAN"])+"    "+str(results["gen_loss_L1"])+"\n")
+                    f2.write("epoch "+str(train_epoch)+" step "+str(train_step)+" global step "+str(results["global_step"])+"    "+ \
+                        str(results["discrim_loss"])+"    "+str(results["gen_loss"])+"    "+str(results["gen_loss_GAN"])+"    "+str(results["gen_loss_L1"])+"\n")
                     f2.close()
 
 
@@ -933,127 +738,4 @@ def main():
             saver.save(sess, os.path.join(a.output_dir, "model"), global_step=sv.global_step)
 
 
-def preprocess_image():
-    if a.input_dir is None or not os.path.exists(a.input_dir):
-        raise Exception("input_dir does not exist")
-
-    input_paths = glob.glob(os.path.join(a.input_dir, "*.jpg"))
-    if len(input_paths) == 0:
-        input_paths = glob.glob(os.path.join(a.input_dir, "*.png"))
-    if len(input_paths) == 0:
-        raise Exception("input_dir contains no image files")
-
-    for path in input_paths:
-    	image = cv2.imread(path)
-    	if image.shape[1] != a.img_width:
-    		for i in xrange(image.shape[1] // a.img_width):
-    			image_tmp = image[:, i*a.img_width:(i+1)*a.img_width, :]
-    			path_tmp = path.split('.')
-    			path_tmp = path_tmp[0].split('_')
-    			path_tmp = path_tmp[2].split('/')
-    			path_tmp2 = path.split('/')
-    			path_tmp = path_tmp2[0] + '/' + path_tmp2[1] + '/crop/' + path_tmp[1] + '_' + str(i+1) + '.png'
-    			cv2.imwrite(path_tmp, image_tmp)
-    		if (i+1)*a.img_width != image.shape[1]:
-    			image_tmp = image[:, image.shape[1]-256:image.shape[1], :]
-    			path_tmp = path.split('.')
-    			path_tmp = path_tmp[0].split('_')
-    			path_tmp = path_tmp[2].split('/')
-    			path_tmp2 = path.split('/')
-    			path_tmp = path_tmp2[0] + '/' + path_tmp2[1] + '/crop/' + path_tmp[1] + '_' + str(i+2) + '.png'
-    			cv2.imwrite(path_tmp, image_tmp)
-    a.input_dir += '/crop'
-    a.output_dir += '/crop'
-    print("Preprocess images finished!")
-
-
-def postprocess_image():
-	if a.output_dir is None or not os.path.exists(a.output_dir):
-		raise Exception("output_dir does not exist")
-	
-	output_dir = a.output_dir[:-5]	#save in original dir not the crop
-	a.output_dir += '/images'
-	output_paths = glob.glob(os.path.join(a.output_dir, "*.jpg"))
-	if len(output_paths) == 0:
-		output_paths = glob.glob(os.path.join(a.output_dir, "*.png"))
-	
-	if len(output_paths) == 0:
-		raise Exception("output_dir contains no image files")
-
-	def get_name(path):
-		name, _ = os.path.splitext(os.path.basename(path))
-		return name
-
-    # if the image names are numbers, sort by the value rather than asciibetically
-    # having sorted inputs means that the outputs are sorted in test mode
-	if all(get_name(path).isdigit() for path in output_paths):
-		output_paths = sorted(output_paths, key=lambda path: int(get_name(path)))
-	else:
-		output_paths = sorted(output_paths)
-
-	input_dir = a.input_dir[:-5]	#find original images not the cropped one
-	input_paths = glob.glob(os.path.join(input_dir, "*.jpg"))
-	if len(input_paths) == 0:
-		input_paths = glob.glob(os.path.join(input_dir, "*.png"))
-	if len(input_paths) == 0:
-		raise Exception("input_dir contains no image files")
-	if all(get_name(path).isdigit() for path in input_paths):
-		input_paths = sorted(input_paths, key=lambda path: int(get_name(path)))
-	else:
-		input_paths = sorted(input_paths)
-
-	input_path = []		# be careful about the difference between path and paths
-	output_path = []
-	target_path = []
-	for i in xrange(len(output_paths) // 3):
-		input_path.append(output_paths[3*i])
-		output_path.append(output_paths[3*i+1])
-		target_path.append(output_paths[3*i+2])
-
-	print(input_path)
-	count = 0	# index of image in paths
-	for i in xrange(len(input_paths)):
-		img = cv2.imread(input_paths[i])
-		num = img.shape[1] // a.img_width	# number of pieces per image
-		image_input = cv2.imread(input_path[count])
-		image_output = cv2.imread(output_path[count])
-		image_target = cv2.imread(target_path[count])
-		count += 1
-		print(input_path[count-1])
-		for j in xrange(1, num):
-			img_tmp = cv2.imread(input_path[count])
-			image_input = np.concatenate((image_input, img_tmp), axis=1)
-			img_tmp = cv2.imread(output_path[count])
-			image_output = np.concatenate((image_output, img_tmp), axis=1)
-			img_tmp = cv2.imread(target_path[count])
-			image_target = np.concatenate((image_target, img_tmp), axis=1)
-			count += 1
-			print(input_path[count-1])
-		if num*a.img_width != img.shape[1]:
-			col = img.shape[1]
-			diff_col = col - num*a.img_width
-			img_tmp = cv2.imread(input_path[count])
-			image_input = np.concatenate((image_input, img_tmp[:,-diff_col-1:-1,:]), axis=1)
-			img_tmp = cv2.imread(output_path[count])
-			image_output = np.concatenate((image_output, img_tmp[:,-diff_col-1:-1,:]), axis=1)
-			img_tmp = cv2.imread(target_path[count])
-			image_target = np.concatenate((image_target, img_tmp[:,-diff_col-1:-1,:]), axis=1)
-			num += 1
-			count += 1
-			print(input_path[count-1])
-
-		tmp_path = output_dir + '/' + input_paths[i].split('/')[-1]
-		tmp_path = tmp_path.split('.')[0]
-		in_path = tmp_path + '-input.png'
-		out_path = tmp_path + '-output.png'
-		tar_path = tmp_path + '-target.png'
-		cv2.imwrite(in_path, image_input)
-		cv2.imwrite(out_path, image_output)
-		cv2.imwrite(tar_path, image_target)
-
-
-
-
-# preprocess_image()
 main()
-# postprocess_image()
