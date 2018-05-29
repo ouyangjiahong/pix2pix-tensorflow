@@ -10,7 +10,8 @@ low = 30;
 high = 80;
 block = 256
 
-for j = 3 : 3
+for j in ["25_new"]
+    j = char(j)
     ori_path = [ori_dir num2str(j) '/original/']
     ann_path = [ann_dir num2str(j) '/originalAnnotationTejas_new/'];
     ann_directory = dir(ann_path);
@@ -75,7 +76,7 @@ for j = 3 : 3
             for k = 1 : floor(col/block)
                 img_ori_tmp = img_ori(:, (k-1)*block+1:k*block);
                 img_clear_tmp = img_clear(:, (k-1)*block+1:k*block);
-                img_dst_path = [dst_dir 'test_traindata_clean/' num2str(num, '%04d') '_' num2str(k) '.png'];
+                img_dst_path = [dst_dir 'test_testdata_clean_25/' num2str(num, '%04d') '_' num2str(k) '.png'];
                 img = [img_ori_tmp img_clear_tmp];
 %                 img = repmat(img,1,1,3);
                 imwrite(img, img_dst_path);
@@ -83,7 +84,7 @@ for j = 3 : 3
             if(col ~= 100 * k)
                 img_ori_tmp = img_ori(:, col-block+1:col);
                 img_clear_tmp = img_clear(:, col-block+1:col);
-                img_dst_path = [dst_dir 'test_traindata_clean/' num2str(num, '%04d') '_' num2str(k+1) '.png'];
+                img_dst_path = [dst_dir 'test_testdata_clean_25/' num2str(num, '%04d') '_' num2str(k+1) '.png'];
                 img = [img_ori_tmp img_clear_tmp];
 %                 img = repmat(img,1,1,3);
                 imwrite(img, img_dst_path);
